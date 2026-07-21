@@ -3,7 +3,7 @@ schema BEFORE converting to YOLO. If the key names differ from what
 prepare_yolo.py assumes, you only have to fix them in one place (parse_ground_truth).
 
 Usage:
-    python src/inspect_annotations.py --path data/raw/synth/<...>/ground_truth.json
+    python src/inspect_annotations.py --path data/raw/train/<...>/ground_truth.json
 """
 import argparse
 import json

@@ -1,11 +1,13 @@
-"""Step 2: download ONLY the scenes you need (not the whole ~50 GB dataset).
+"""Download only the scenes we need (not the full ~50 GB dataset).
 
-Strategy: pull 1-2 synthetic scenes + the real captures, get the whole pipeline
-working end to end, THEN widen SYNTH_PATTERNS in config.py for the full run.
+Three buckets:
+  train -> labeled synthetic scenes used for training
+  test  -> labeled synthetic scenes held out for the mAP score
+  real  -> the unlabeled real footage, for the qualitative demo
 
 Usage:
-    python src/download_data.py --which both
-    python src/download_data.py --which synth
+    python src/download_data.py --which all
+    python src/download_data.py --which train
     python src/download_data.py --which real
 
 Note: the dataset may require accepting terms on its Hugging Face page and a
@@ -17,33 +19,30 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 from huggingface_hub import snapshot_download
-from config import REPO_ID, REPO_TYPE, RAW_DIR, SYNTH_PATTERNS, REAL_PATTERNS
+from config import REPO_ID, REPO_TYPE, RAW_DIR, TRAIN_PATTERNS, TEST_PATTERNS, REAL_PATTERNS
+
+BUCKETS = {"train": TRAIN_PATTERNS, "test": TEST_PATTERNS, "real": REAL_PATTERNS}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--which", choices=["synth", "real", "both"], default="both")
+    ap.add_argument("--which", choices=["train", "test", "real", "all"], default="all")
     args = ap.parse_args()
 
-    jobs = []
-    if args.which in ("synth", "both"):
-        jobs.append(("synth", SYNTH_PATTERNS))
-    if args.which in ("real", "both"):
-        jobs.append(("real", REAL_PATTERNS))
-
-    for label, patterns in jobs:
-        dest = RAW_DIR / label
+    names = ["train", "test", "real"] if args.which == "all" else [args.which]
+    for name in names:
+        dest = RAW_DIR / name
         dest.mkdir(parents=True, exist_ok=True)
-        print(f"\n=== Downloading '{label}' -> {dest} ===")
-        print("patterns:", patterns)
+        print(f"\n=== Downloading '{name}' -> {dest} ===")
+        print("patterns:", BUCKETS[name])
         snapshot_download(
             repo_id=REPO_ID,
             repo_type=REPO_TYPE,
-            allow_patterns=patterns,
+            allow_patterns=BUCKETS[name],
             local_dir=str(dest),
         )
 
-    print("\nDone. Peek at what landed:  ls -R data/raw | head -40")
+    print("\nDone. Peek:  ls -R data/raw | head -40")
 
 
 if __name__ == "__main__":

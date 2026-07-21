@@ -1,14 +1,15 @@
-"""Step 3b: turn NVIDIA videos + annotations into a YOLO detection dataset.
+"""Turn NVIDIA videos + annotations into a YOLO detection dataset.
 
-  videos/<camera>.mp4  +  ground_truth.json  ->  images/*.jpg + labels/*.txt
+  videos/Camera_XXXX.mp4  +  ground_truth*.json  ->  images/*.jpg + labels/*.txt
 
 Only parse_ground_truth() depends on the exact JSON schema. Confirm it with
-    python src/inspect_annotations.py --path <one ground_truth.json>
-and adjust the key names below if they differ. Everything else stays the same.
+    python src/inspect_annotations.py --path <one ground_truth json>
+and adjust the key names there if they differ. Everything else is schema-agnostic.
 
 Usage:
-    python src/prepare_yolo.py --split synth
-    python src/prepare_yolo.py --split real
+    python src/prepare_yolo.py --split train
+    python src/prepare_yolo.py --split test
+    python src/prepare_yolo.py --split train --max-scenes 1   # smaller run for the ablation
 """
 import argparse
 import json
@@ -21,7 +22,7 @@ from pathlib import Path
 import cv2
 
 sys.path.append(os.path.dirname(__file__))
-from config import (RAW_DIR, YOLO_SYNTH_DIR, YOLO_REAL_DIR,
+from config import (RAW_DIR, YOLO_TRAIN_DIR, YOLO_TEST_DIR,
                     CLASS_MAP, CLASS_NAMES, FRAME_STRIDE)
 
 
@@ -73,12 +74,26 @@ def _as_xywh(box):
     return float(box[0]), float(box[1]), float(box[2]), float(box[3])
 
 
-def scene_dirs(split):
-    """Yield (scene_folder, ground_truth_path) for a split's raw data."""
+def _cam_annotations(ann, video_stem):
+    """Match a video file (e.g. 'Camera_0000') to its annotations, trying a few
+    common camera-id spellings."""
+    if video_stem in ann:
+        return ann[video_stem]
+    digits = "".join(c for c in video_stem if c.isdigit())
+    for key in (digits, digits.lstrip("0") or "0", str(int(digits)) if digits else video_stem):
+        if key in ann:
+            return ann[key]
+    return None
+
+
+def scene_dirs(split, max_scenes=None):
+    """Yield (scene_folder, ground_truth_path) for a downloaded split."""
     base = RAW_DIR / split
-    for gt in base.rglob("ground_truth.json"):
+    found = []
+    for gt in sorted(base.rglob("ground_truth*.json")):
         if (gt.parent / "videos").is_dir():
-            yield gt.parent, gt
+            found.append((gt.parent, gt))
+    return found[:max_scenes] if max_scenes else found
 
 
 def convert_scene(scene, gt_path, out_dir, split_name):
@@ -89,8 +104,8 @@ def convert_scene(scene, gt_path, out_dir, split_name):
     lbl_dir.mkdir(parents=True, exist_ok=True)
 
     n = 0
-    for video in (scene / "videos").glob("*.mp4"):
-        cam_ann = ann.get(video.stem)   # assumes filename stem == camera id
+    for video in sorted((scene / "videos").glob("*.mp4")):
+        cam_ann = _cam_annotations(ann, video.stem)
         if not cam_ann:
             continue
         cap = cv2.VideoCapture(str(video))
@@ -133,29 +148,31 @@ def make_val_split(out_dir, frac):
 
 
 def write_data_yaml(out_dir, split):
-    # real split has no train folder; point train at val so the file is valid
-    train = "images/train" if split == "synth" else "images/val"
-    lines = [f"path: {out_dir.resolve().as_posix()}",
-             f"train: {train}",
-             "val: images/val",
-             f"nc: {len(CLASS_NAMES)}",
-             f"names: {CLASS_NAMES}"]
-    (out_dir / "data.yaml").write_text("\n".join(lines))
+    train = "images/train" if split == "train" else "images/val"
+    (out_dir / "data.yaml").write_text("\n".join([
+        f"path: {out_dir.resolve().as_posix()}",
+        f"train: {train}",
+        "val: images/val",
+        f"nc: {len(CLASS_NAMES)}",
+        f"names: {CLASS_NAMES}",
+    ]))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--split", choices=["synth", "real"], required=True)
+    ap.add_argument("--split", choices=["train", "test"], required=True)
+    ap.add_argument("--max-scenes", type=int, default=None,
+                    help="use at most N scenes (for the training-data-size ablation)")
     ap.add_argument("--val-frac", type=float, default=0.1)
     args = ap.parse_args()
 
-    out_dir = YOLO_SYNTH_DIR if args.split == "synth" else YOLO_REAL_DIR
-    # synthetic -> train (with a small val carved off); real -> val (test) only
-    split_name = "train" if args.split == "synth" else "val"
+    out_dir = YOLO_TRAIN_DIR if args.split == "train" else YOLO_TEST_DIR
+    # train -> images/train (+ a small val slice); test -> images/val only
+    split_name = "train" if args.split == "train" else "val"
 
-    scenes = list(scene_dirs(args.split))
+    scenes = scene_dirs(args.split, args.max_scenes)
     if not scenes:
-        print(f"No scenes under {RAW_DIR / args.split}. "
+        print(f"No labeled scenes under {RAW_DIR / args.split}. "
               f"Run: python src/download_data.py --which {args.split}")
         return
 
@@ -165,7 +182,7 @@ def main():
         print(f"  {scene.name}: {c} labeled frames")
         total += c
 
-    if args.split == "synth" and total:
+    if args.split == "train" and total:
         make_val_split(out_dir, args.val_frac)
 
     write_data_yaml(out_dir, args.split)
