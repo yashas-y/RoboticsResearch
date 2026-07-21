@@ -1,0 +1,15 @@
+# data + model artifacts are big / regenerable — don't commit them
+data/
+runs/
+*.pt
+*.onnx
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# keep results (small csv/plots) but ignore stray files
+results/*.jpg
+!results/.gitkeep
