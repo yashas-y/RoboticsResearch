@@ -13,3 +13,8 @@ __pycache__/
 # keep results (small csv/plots) but ignore stray files
 results/*.jpg
 !results/.gitkeep
+
+# editor / tooling settings — not part of the project
+.claude/
+.vscode/
+.idea/
