@@ -27,51 +27,36 @@ from config import (RAW_DIR, YOLO_TRAIN_DIR, YOLO_TEST_DIR,
 
 
 def parse_ground_truth(gt_path):
-    """Return {camera_id(str): {frame_id(int): [(class_name, x, y, w, h), ...]}}.
+    """Return {camera_id: {frame_id(int): [(class_name, x, y, w, h), ...]}}.
 
-    Boxes are pixel (xmin, ymin, width, height) in the camera image.
-    >>> CONFIRM these keys with inspect_annotations.py and edit if needed. <<<
+    NVIDIA MTMC schema (confirmed with inspect_annotations.py):
+        { "<frame>": [ {"object type": "Person",
+                        "2d bounding box visible": {"Camera_0003": [xmin, ymin, xmax, ymax],
+                                                    ...}},
+                       ... ],
+          ... }
+    The top level is keyed by frame number; each object gives a pixel xyxy box for
+    every camera that can see it. We keep only CLASS_MAP types and convert xyxy->xywh.
     """
     with open(gt_path) as f:
         data = json.load(f)
 
-    frames = data if isinstance(data, list) else data.get(
-        "frames", data.get("annotations", []))
-
     out = {}
-    for rec in frames:
-        frame_id = int(rec.get("frame_id", rec.get("frame", rec.get("frameId", -1))))
-        for obj in rec.get("objects", rec.get("instances", [])):
-            cls = (obj.get("object_type") or obj.get("type")
-                   or obj.get("class") or obj.get("category") or "")
+    for frame_key, objects in data.items():
+        frame_id = int(frame_key)
+        for obj in objects:
+            cls = obj.get("object type", "")
             if cls not in CLASS_MAP:
                 continue
-            boxes = (obj.get("2d_bounding_boxes") or obj.get("bboxes_2d")
-                     or obj.get("bbox_2d") or {})
-            if isinstance(boxes, dict) and "width" not in boxes and "xmin" not in boxes:
-                items = boxes.items()                       # keyed by camera id
-            else:
-                items = [(str(obj.get("camera_id", obj.get("camera", "0"))), boxes)]
-            for cam_id, box in items:
-                if not box:
+            for cam_id, box in obj.get("2d bounding box visible", {}).items():
+                if not box or len(box) < 4:
                     continue
-                out.setdefault(str(cam_id), {}).setdefault(frame_id, []).append(
-                    (cls, *_as_xywh(box)))
+                xmin, ymin, xmax, ymax = box[:4]
+                w, h = xmax - xmin, ymax - ymin
+                if w > 0 and h > 0:
+                    out.setdefault(cam_id, {}).setdefault(frame_id, []).append(
+                        (cls, xmin, ymin, w, h))
     return out
-
-
-def _as_xywh(box):
-    """Accept [x,y,w,h], {'x','y','width','height'}, or {'xmin','ymin','xmax','ymax'}."""
-    if isinstance(box, dict):
-        if "width" in box:
-            return float(box["x"]), float(box["y"]), float(box["width"]), float(box["height"])
-        if "xmin" in box:
-            return (float(box["xmin"]), float(box["ymin"]),
-                    float(box["xmax"]) - float(box["xmin"]),
-                    float(box["ymax"]) - float(box["ymin"]))
-        v = list(box.values())
-        return float(v[0]), float(v[1]), float(v[2]), float(v[3])
-    return float(box[0]), float(box[1]), float(box[2]), float(box[3])
 
 
 def _cam_annotations(ann, video_stem):
@@ -147,6 +132,18 @@ def make_val_split(out_dir, frac):
                 shutil.move(str(src), str(dst))
 
 
+def diagnose_types(gt_path):
+    """Print the object-type strings present, to fix CLASS_MAP if 0 labels came out."""
+    with open(gt_path) as f:
+        data = json.load(f)
+    types = sorted({obj.get("object type", "?")
+                    for objects in data.values() for obj in objects})
+    print("\n0 labels written. Object types present in the data:")
+    print("  ", types)
+    print(f"  CLASS_MAP currently wants {list(CLASS_MAP)} — edit it in config.py "
+          f"to match one of the above (exact spelling).")
+
+
 def write_data_yaml(out_dir, split):
     train = "images/train" if split == "train" else "images/val"
     (out_dir / "data.yaml").write_text("\n".join([
@@ -182,7 +179,11 @@ def main():
         print(f"  {scene.name}: {c} labeled frames")
         total += c
 
-    if args.split == "train" and total:
+    if total == 0:
+        diagnose_types(scenes[0][1])
+        return
+
+    if args.split == "train":
         make_val_split(out_dir, args.val_frac)
 
     write_data_yaml(out_dir, args.split)
